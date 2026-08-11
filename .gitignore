@@ -1,0 +1,112 @@
+# =========================
+# Python
+# =========================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python environments
+
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution / packaging
+
+build/
+dist/
+*.egg-info/
+
+# =========================
+# Data
+# =========================
+
+data/
+datasets/
+root/
+*.zip
+*.tar
+*.tar.gz
+# =========================
+# Local CLI scripts
+# =========================
+
+src/sample_cli.py
+# =========================
+# Model checkpoints
+# =========================
+
+checkpoints/
+weights/
+pretrained/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# =========================
+# Experiment outputs
+# =========================
+
+outputs/
+runs/
+results/
+samples/
+generated/
+logs/
+
+# TensorBoard
+
+tensorboard/
+events.out.tfevents.*
+
+# Weights & Biases
+
+wandb/
+
+# =========================
+# Configuration secrets
+# =========================
+
+.env
+*.env
+
+# =========================
+# Jupyter
+# =========================
+
+.ipynb_checkpoints/
+
+# =========================
+# IDE / Editors
+# =========================
+
+.vscode/
+.idea/
+
+# =========================
+# OS files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+# Temporary files
+# =========================
+
+*.tmp
+*.temp
+*.log
+*.bak
+*.swp
+
+# =========================
+# Local debugging / generated files
+# =========================
+
+check_scaling_factor.py
+samples_grid.png

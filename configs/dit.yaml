@@ -1,0 +1,90 @@
+model:
+
+  name: dit
+
+  variant: DiT-B
+
+
+  dit:
+
+    latent_dim: 4
+
+    mlp_ratio: 4.0
+
+    grid_h: 32
+    grid_w: 32
+
+    num_classes: null
+
+    cfg_dropout: 0.1
+
+    dropout: 0.0
+
+
+  attention:
+
+    type: rope
+
+
+
+vae:
+  checkpoint: checkpoints/vae_celeba_hq_256_run4/vae_run4_final.pt
+
+elt:
+  enabled: false
+# ============================================================
+# Evaluation
+# ============================================================
+
+eval:
+
+  every: 5000
+
+  fid:
+    enabled: true
+    fid_num_samples: 5000
+    sample_batch_size: 64
+    ddim_steps: 50
+    guidance_scale: 1.0
+    eta: 0.1
+
+diffusion:
+
+  schedule: linear
+
+  timestep: 1000
+
+  beta_start: 1.0e-4
+
+  beta_end: 0.02
+
+  cosine_s: 0.008
+
+  learn_sigma: false
+
+sampling:
+  checkpoint: null
+  save_dir: samples
+
+  enabled: true
+
+  every: 5000
+
+  diffusion:
+    num_images: 16
+    batch_size: 16
+    sampler: ddim
+    num_steps: 20
+    guidance_scale: 7.0
+    eta: 0.0
+
+loss:
+
+  diffusion: mse
+train:
+
+  resume: checkpoints/dit_celeba_hq_256_run5/dit_run5_110000.pt
+  total_steps: 200000
+
+conditioning:
+  enabled: false

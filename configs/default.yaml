@@ -1,0 +1,75 @@
+seed: 123
+
+
+# ============================================================
+# Data
+# ============================================================
+
+data:
+  name: imagenet
+  root: ./data/imagenet/data
+  dataset: imagenet_parquet
+  image_size: 256
+  batch_size: 32
+  num_workers: 4
+# ============================================================
+# Optimizer
+# ============================================================
+
+optimizer:
+
+  name: adamw
+
+  lr: 5.0e-5
+
+  weight_decay: 0.01
+
+  betas:
+    - 0.9
+    - 0.999
+
+  eps: 1.0e-8
+
+  fused: true
+
+
+
+# ============================================================
+# Scheduler
+# ============================================================
+
+scheduler:
+  name: linear_warmup_constant
+  warmup_ratio: 0.1
+
+
+# ============================================================
+# Training
+# ============================================================
+
+train:
+
+  total_steps: 100000
+  ema_window_ratio: 0.01
+
+  mixed_precision: bf16
+
+  use_compile: false
+
+  benchmark: true
+
+  allow_tf32: true
+
+  grad_clip_norm: 1.0
+
+  log_every: 100
+
+  ckpt_every: 10000
+
+  checkpoints_dir: checkpoints
+  deterministic: false
+
+repa:
+  enabled: false
+  lambda: 0.5
+  encoder: dinov2
