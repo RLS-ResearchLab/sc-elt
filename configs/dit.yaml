@@ -1,90 +1,82 @@
-model:
-
-  name: dit
-
-  variant: DiT-B
+seed: 123
 
 
-  dit:
-
-    latent_dim: 4
-
-    mlp_ratio: 4.0
-
-    grid_h: 32
-    grid_w: 32
-
-    num_classes: 1000
-
-    cfg_dropout: 0.1
-
-    dropout: 0.0
-
-
-  attention:
-
-    type: rope
-
-
-
-vae:
-  checkpoint: checkpoints/vae_imagenet_256_run4/vae_run4_80000.pt
-  
-elt:
-  enabled: false
 # ============================================================
-# Evaluation
+# Data
 # ============================================================
 
-eval:
+data:
+  name: ffhq
+  root: ./data/ffhq_256/data
+  dataset: ffhq_parquet
+  image_size: 256
+  batch_size: 32
+  num_workers: 4
+# ============================================================
+# Optimizer
+# ============================================================
 
-  every: 5000
+optimizer:
 
-  fid:
-    enabled: true
-    fid_num_samples: 5000
-    sample_batch_size: 64
-    ddim_steps: 50
-    guidance_scale: 1.0
-    eta: 0.0
+  name: adamw
 
-diffusion:
+  lr: 5.0e-5
 
-  schedule: linear
+  weight_decay: 0.01
 
-  timestep: 1000
+  betas:
+    - 0.9
+    - 0.999
 
-  beta_start: 1.0e-4
+  eps: 1.0e-8
 
-  beta_end: 0.02
+  fused: true
 
-  cosine_s: 0.008
 
-  learn_sigma: false
 
-sampling:
-  checkpoint: null
-  save_dir: samples
+# ============================================================
+# Scheduler
+# ============================================================
 
-  enabled: true
+scheduler:
+  name: linear_warmup_constant
+  warmup_ratio: 0.1
 
-  every: 5000
 
-  diffusion:
-    num_images: 16
-    batch_size: 16
-    sampler: ddim
-    num_steps: 20
-    guidance_scale: 7.0
-    eta: 0.0
+# ============================================================
+# Training
+# ============================================================
 
-loss:
-
-  diffusion: mse
 train:
 
-  resume: null
-  total_steps: 300000
+  total_steps: 100000
+  ema_window_ratio: 0.01
+  gradient_accumulation_steps: 4
 
-conditioning:
+  mixed_precision: bf16
+
+  use_compile: false
+
+  benchmark: true
+
+  allow_tf32: true
+
+  grad_clip_norm: 1.0
+
+  log_every: 100
+
+  ckpt_every: 10000
+
+  checkpoints_dir: checkpoints
+  deterministic: false
+
+repa:
   enabled: false
+  lambda: 0.5
+  encoder: dinov2
+
+wandb_checkpoint:
+  enabled: true
+  every: 10000
+  upload_best: true
+  upload_final: true

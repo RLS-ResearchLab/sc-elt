@@ -16,6 +16,7 @@ from utils import (maybe_resume,
                    denormalize,
                    EMA,
                    compute_latent_scaling_factor,
+                   should_upload_checkpoint,
                    )
 from eval import extract_images,visualize_reconstruction,build_evaluators,build_fid_metric
 from model import build_model
@@ -55,24 +56,19 @@ class BaseTrainer:
         """
         pass
 
-    def train(self):
-        raise NotImplementedError
-
     def train_step(self, batch,step=None):
         raise NotImplementedError
 
     def validate(self,step):
         raise NotImplementedError
 
-    def log(self,step,train_output):
-        raise NotImplementedError
+    def maybe_sample(self, step):
+        """
+        Optional hook for subclasses that support generation-based sampling
+        during training (e.g. DiTTrainer). No-op by default.
+        """
+        pass
 
-    def save_checkpoint(self,step):
-        raise NotImplementedError
-
-    def save_final_checkpoint(self):
-        raise NotImplementedError
-    
     def _log_evaluation(self, step, name, result):
         metrics = result.get("metrics", {})
         logs = {**{f"eval/{name}/{k}": v for k, v in metrics.items()},"step": step,}
@@ -83,6 +79,7 @@ class BaseTrainer:
         if self.accelerator.is_main_process:
             wandb.log(logs)
             print(f"eval step {step} | {name}: "+" ".join(f"{k}: {v:.5f}"for k, v in metrics.items()))
+
     def _use_ema(self):
             if self.ema is not None:
                 return self.ema.apply_shadow(self.raw_model)
@@ -93,7 +90,7 @@ class BaseTrainer:
             return
         if self.ema is not None:
             self.ema.restore(self.raw_model,backup,)
-            
+
     def reset_running_losses(self):
 
         self.running_sums = {}
@@ -113,7 +110,7 @@ class BaseTrainer:
             name: total / self.running_count
             for name, total in self.running_sums.items()
         }
-    
+
     def run_evaluation(self, step):
         backup = self._use_ema()
         results = {}
@@ -129,7 +126,70 @@ class BaseTrainer:
             self.raw_model.train()
         return results
 
-            
+    # ------------------------------------------------------------
+    # Shared by VAETrainer and DiTTrainer (previously duplicated)
+    # ------------------------------------------------------------
+    def log(self, step, train_output):
+        self.update_running_losses(train_output["losses"], train_output["batch_size"])
+        if step % self.cfg["train"]["log_every"] != 0:
+            return
+        metrics = self.get_running_metrics()
+        if self.accelerator.is_main_process:
+            current_lr = self.scheduler.get_last_lr()[0] if self.scheduler is not None else self.optimizer.param_groups[0]["lr"]
+            wandb.log({**{f"train/{k}": v for k, v in metrics.items()}, "train/lr": current_lr, "step": step})
+            if step % 10000 == 0:
+                print(f"step {step} | lr: {current_lr:.6e}")
+            print(f"step {step} | " + " ".join(f"{k}: {v:.5f}" for k, v in metrics.items()))
+        self.reset_running_losses()
+
+    def save_checkpoint(self, step):
+        if step % self.cfg["train"]["ckpt_every"] != 0:
+            return
+        if not self.accelerator.is_main_process:
+            return
+        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_{step}.pt")
+        upload = should_upload_checkpoint(
+            self.cfg,
+            step,
+        )
+        save_checkpoint(path=path,model=self.raw_model,optimizer=self.optimizer,scheduler=self.scheduler,ema=self.ema,epoch=step,cfg=self.cfg,upload_to_wandb=upload)
+
+    def save_final_checkpoint(self):
+        if not self.accelerator.is_main_process:
+            return
+        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_final.pt")
+        upload = self.cfg.get("wandb_checkpoint",{}).get("enabled",False) and self.cfg.get("wandb_checkpoint",{}).get("upload_final",True)
+        save_checkpoint(path=path, model=self.raw_model, optimizer=self.optimizer, ema=self.ema, epoch=self.total_steps, cfg=self.cfg,scheduler=self.scheduler,upload_to_wandb=upload,)
+
+    def save_best_checkpoint(self):
+        if not self.accelerator.is_main_process:
+            return
+        if not hasattr(self, "best_state"):
+            return
+        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_best.pt")
+        # temporarily load best weights into raw_model, save, then restore current weights
+        current_state = copy.deepcopy(self.raw_model.state_dict())
+        self.raw_model.load_state_dict(self.best_state["model"])
+        upload = self.cfg.get("wandb_checkpoint",{}).get("enabled",False) and self.cfg.get("wandb_checkpoint",{}).get("upload_best",True)
+        save_checkpoint(
+            path=path, model=self.raw_model, optimizer=self.optimizer,
+            scheduler=self.scheduler, ema=self.ema, epoch=self.best_step, cfg=self.cfg,upload_to_wandb=upload,
+        )
+        self.raw_model.load_state_dict(current_state)
+
+    def train(self):
+        self.setup()
+        for step in range(self.start_step, self.total_steps):
+            batch = next(self.train_iter)
+            train_output = self.train_step(batch,step)
+            self.log(step, train_output)
+            self.validate(step)
+            self.maybe_sample(step)
+            self.save_checkpoint(step)
+        self.save_final_checkpoint()
+        self.save_best_checkpoint()
+
+
 class VAETrainer(BaseTrainer):
     def __init__(self, cfg, model, optimizer, criterion, train_loader, accelerator, device, checkpoint_dir, scheduler=None, ema=None, logger=None, evaluators=None):
         super().__init__(cfg, model, optimizer, criterion, train_loader, accelerator, device, checkpoint_dir, scheduler, ema, logger, evaluators)
@@ -153,14 +213,14 @@ class VAETrainer(BaseTrainer):
                                          scheduler=self.scheduler,
                                          ema=self.ema,
                                          device=self.device)
-                
-                    
+
+
 
         self.total_steps =  self.cfg["train"]["total_steps"]
         self.train_iter = InfiniteDataLoader(self.train_loader)
         self.running_sums = {}
         self.running_count = 0
-        
+
     def train_step(self, batch,step=None):
         images = extract_images(batch)
         with self.accelerator.accumulate(self.model):
@@ -181,19 +241,6 @@ class VAETrainer(BaseTrainer):
             "batch_size": images.size(0)
             }
 
-    def log(self, step, train_output):
-        self.update_running_losses(train_output["losses"], train_output["batch_size"])
-        if step % self.cfg["train"]["log_every"] != 0:
-            return
-        metrics = self.get_running_metrics()
-        if self.accelerator.is_main_process:
-            current_lr = self.scheduler.get_last_lr()[0] if self.scheduler is not None else self.optimizer.param_groups[0]["lr"]
-            wandb.log({**{f"train/{k}": v for k, v in metrics.items()}, "train/lr": current_lr, "step": step})
-            if step % 10000 == 0:
-                print(f"step {step} | lr: {current_lr:.6e}")
-            print(f"step {step} | " + " ".join(f"{k}: {v:.5f}" for k, v in metrics.items()))
-        self.reset_running_losses()
-
     def validate(self, step):
         if step == 0:
             return
@@ -213,45 +260,6 @@ class VAETrainer(BaseTrainer):
             }
             print(f"step {step}: new best reconstruction_mse={current:.6f} (will save at end of training)")
 
-    def save_checkpoint(self, step):
-
-        if step % self.cfg["train"]["ckpt_every"] != 0:
-            return
-        if not self.accelerator.is_main_process:
-            return
-        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_{step}.pt")
-        save_checkpoint(path=path,model=self.raw_model,optimizer=self.optimizer,ema=self.ema,epoch=step,cfg=self.cfg,scheduler=self.scheduler)
-    def save_final_checkpoint(self):
-
-        if not self.accelerator.is_main_process:
-            return
-        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_final.pt")
-        save_checkpoint(path=path, model=self.raw_model, optimizer=self.optimizer, ema=self.ema, epoch=self.total_steps, cfg=self.cfg,scheduler=self.scheduler)
-
-    def save_best_checkpoint(self):
-        if not self.accelerator.is_main_process:
-            return
-        if not hasattr(self, "best_state"):
-            return
-        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_best.pt")
-        # temporarily load best weights into raw_model, save, then restore current weights
-        current_state = copy.deepcopy(self.raw_model.state_dict())
-        self.raw_model.load_state_dict(self.best_state["model"])
-        save_checkpoint(
-            path=path, model=self.raw_model, optimizer=self.optimizer,
-            scheduler=self.scheduler, ema=self.ema, epoch=self.best_step, cfg=self.cfg
-        )
-        self.raw_model.load_state_dict(current_state)
-    def train(self):
-        self.setup()
-        for step in range(self.start_step, self.total_steps):
-            batch = next(self.train_iter)
-            train_output = self.train_step(batch,step)
-            self.log(step, train_output)
-            self.validate(step)
-            self.save_checkpoint(step)
-        self.save_final_checkpoint()
-        self.save_best_checkpoint()
 
 def build_vae_trainer(cfg):
     set_seed(cfg["seed"])
@@ -442,7 +450,7 @@ class DiTTrainer(BaseTrainer):
             return
         if not self.accelerator.is_main_process:
             return
-        
+
         results = self.run_evaluation(step)
         current = results["fid"]["metrics"]["fid"]
         if current < self.best_metric:
@@ -453,7 +461,7 @@ class DiTTrainer(BaseTrainer):
                 "ema": copy.deepcopy(self.ema.shadow) if self.ema is not None else None,
             }
             print(f"step {step}: new best fid={current:.4f} (will save at end of training)")
-                    
+
     def sample(self):
         sampler = build_sampler(cfg=self.cfg,model=self.raw_model,device=self.device,vae=self.vae,diffusion=self.diffusion,scaling_factor=self.scaling_factor)
         outputs = sampler.generate()
@@ -476,58 +484,6 @@ class DiTTrainer(BaseTrainer):
             self._restore_ema(backup)
             self.raw_model.train()
 
-    def log(self, step, train_output):
-        self.update_running_losses(train_output["losses"],train_output["batch_size"])
-        if step % self.cfg["train"]["log_every"] != 0:
-            return
-        metrics = self.get_running_metrics()
-        if self.accelerator.is_main_process:
-            current_lr = self.scheduler.get_last_lr()[0] if self.scheduler is not None else self.optimizer.param_groups[0]["lr"]
-            wandb.log({**{f"train/{k}": v for k,v in metrics.items()}, "train/lr": current_lr, "step": step})
-            if step % 10000 == 0:
-                print(f"step {step} | lr: {current_lr:.6e}")
-            print(f"step {step} | "+" ".join(f"{k}: {v:.5f}"for k,v in metrics.items()))
-        self.reset_running_losses()
-        
-    def save_checkpoint(self,step):
-        if step % self.cfg["train"]["ckpt_every"] !=0:
-            return
-        if not self.accelerator.is_main_process:
-            return
-        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_{step}.pt")
-        save_checkpoint(path=path,model=self.raw_model,optimizer=self.optimizer,scheduler=self.scheduler,ema=self.ema,epoch=step,cfg=self.cfg)
-
-    def save_best_checkpoint(self):
-        if not self.accelerator.is_main_process:
-            return
-        if not hasattr(self, "best_state"):
-            return
-        path = os.path.join(self.checkpoint_dir, f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_best.pt")
-        current_state = copy.deepcopy(self.raw_model.state_dict())
-        self.raw_model.load_state_dict(self.best_state["model"])
-        save_checkpoint(
-            path=path, model=self.raw_model, optimizer=self.optimizer,
-            scheduler=self.scheduler, ema=self.ema, epoch=self.best_step, cfg=self.cfg,
-        )
-        self.raw_model.load_state_dict(current_state)
-
-    def save_final_checkpoint(self):
-        if not self.accelerator.is_main_process:
-            return
-        path = os.path.join(self.checkpoint_dir,f"{self.cfg['model']['name']}_run{self.cfg['run_number']}_final.pt")
-        save_checkpoint(path=path,model=self.raw_model,optimizer=self.optimizer,scheduler=self.scheduler,ema=self.ema,epoch=self.total_steps,cfg=self.cfg)
-
-    def train(self):
-        self.setup()
-        for step in range(self.start_step,self.total_steps):
-            batch = next(self.train_iter)
-            train_output = self.train_step(batch,step)
-            self.log(step,train_output)
-            self.validate(step)
-            self.maybe_sample(step)
-            self.save_checkpoint(step)
-        self.save_final_checkpoint()
-        self.save_best_checkpoint()
 
 # DIT FACTORY
 def build_dit_trainer(cfg):

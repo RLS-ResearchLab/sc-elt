@@ -28,8 +28,8 @@ eval:
     
   fid:
     enabled: true
-    fid_num_samples: 50000
+    fid_num_samples: 1000
 
 train:
-
+  total_steps: 50000
   resume: null

@@ -420,6 +420,21 @@ class EMA:
                 param.data.copy_(backup[name])
 
 
+def upload_checkpoint_to_wandb(path, artifact_name, aliases=None):
+    if wandb.run is None:
+        return
+
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="model",
+    )
+
+    artifact.add_file(path)
+    wandb.log_artifact(
+        artifact,
+        aliases=aliases or [],
+    )
+
 def save_checkpoint(
     path,
     model,
@@ -430,6 +445,7 @@ def save_checkpoint(
     epoch=0,
     cfg=None,
     scaling_factor=None,
+    upload_to_wandb=False,
 ):
     checkpoint = {
         "epoch": epoch,
@@ -455,6 +471,27 @@ def save_checkpoint(
         checkpoint["scaling_factor"] = scaling_factor
 
     torch.save(checkpoint, path)
+
+    if upload_to_wandb and wandb.run is not None:
+        artifact_name = os.path.splitext(
+            os.path.basename(path)
+        )[0]
+
+        artifact = wandb.Artifact(
+            name=artifact_name,
+            type="model",
+        )
+
+        artifact.add_file(path)
+
+        wandb.log_artifact(
+            artifact,
+            aliases=[
+                "latest",
+                f"step-{epoch}",
+            ],
+        )
+
 
 
 def load_checkpoint(
@@ -673,3 +710,18 @@ def compute_latent_scaling_factor(cfg, split="train"):
 
     std = (sum_sq / total) ** 0.5
     return 1.0 / std
+
+def should_upload_checkpoint(cfg, step):
+    wandb_cfg = cfg.get("wandb_checkpoint", {})
+
+    if not wandb_cfg.get("enabled", False):
+        return False
+
+    every = wandb_cfg.get("every", 10000)
+
+    if every <= 0:
+        raise ValueError(
+            "wandb_checkpoint.every must be > 0"
+        )
+
+    return step % every == 0

@@ -6,15 +6,12 @@ seed: 123
 # ============================================================
 
 data:
-  name: imagenet
-  root: ./data/imagenet/data
-  dataset: imagenet_parquet
+  name: ffhq
+  root: ./data/ffhq_256/data
+  dataset: ffhq_parquet
   image_size: 256
-  batch_size: 16
+  batch_size: 32
   num_workers: 4
-  subset_indices: ./data/imagenet_200k_indices.pt
-  latent_cache_path_train: ./data/imagenet_train_latents
-  latent_cache_path_test: ./data/imagenet_test_latents
 # ============================================================
 # Optimizer
 # ============================================================
@@ -52,9 +49,9 @@ scheduler:
 
 train:
 
-  total_steps: 200000
+  total_steps: 100000
   ema_window_ratio: 0.01
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 4
 
   mixed_precision: bf16
 
@@ -77,3 +74,9 @@ repa:
   enabled: false
   lambda: 0.5
   encoder: dinov2
+
+wandb_checkpoint:
+  enabled: true
+  every: 10000
+  upload_best: true
+  upload_final: true
