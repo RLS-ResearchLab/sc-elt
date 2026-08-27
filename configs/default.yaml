@@ -10,8 +10,11 @@ data:
   root: ./data/imagenet/data
   dataset: imagenet_parquet
   image_size: 256
-  batch_size: 32
+  batch_size: 16
   num_workers: 4
+  subset_indices: ./data/imagenet_200k_indices.pt
+  latent_cache_path_train: ./data/imagenet_train_latents
+  latent_cache_path_test: ./data/imagenet_test_latents
 # ============================================================
 # Optimizer
 # ============================================================
@@ -49,8 +52,9 @@ scheduler:
 
 train:
 
-  total_steps: 100000
+  total_steps: 200000
   ema_window_ratio: 0.01
+  gradient_accumulation_steps: 2
 
   mixed_precision: bf16
 

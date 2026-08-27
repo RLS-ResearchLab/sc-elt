@@ -14,14 +14,15 @@ from utils import (maybe_resume,
                    build_distillation,
                    build_repa,
                    denormalize,
-                   EMA
+                   EMA,
+                   compute_latent_scaling_factor,
                    )
 from eval import extract_images,visualize_reconstruction,build_evaluators,build_fid_metric
 from model import build_model
 from  diffusion  import  build_diffusion
 from sample import build_sampler
 from losses import build_loss
-from  data import build_dataloader,extract_labels,compute_scaling_factor
+from  data import build_dataloader,extract_labels,compute_scaling_factor,build_latent_dataloader
 import  torch
 import wandb,os
 import copy
@@ -271,7 +272,8 @@ def build_vae_trainer(cfg):
     window = cfg["train"]["ema_window_ratio"] * cfg["train"]["total_steps"]
     ema_decay = 1 - 1 / window
     ema = EMA(model, decay=ema_decay)
-    evaluators = build_evaluators(cfg, model, loaders,device)  # <- needs loaders/fid_metric, see below
+    fid_metric = build_fid_metric(cfg, device)
+    evaluators = build_evaluators(cfg, model, loaders,device,fid_metric=fid_metric,)  # <- needs loaders/fid_metric, see below
     return VAETrainer(
         cfg, model, optimizer, criterion, train_loader, accelerator, device,
         checkpoint_dir, scheduler=scheduler, ema=ema,logger=logger, evaluators=evaluators,
@@ -350,64 +352,91 @@ class DiTTrainer(BaseTrainer):
             "c": None,
             "history": None,
         }
-    def train_step(self,batch,step = None):
-        images = extract_images(batch)
-        labels = extract_labels(batch) if self.cfg["conditioning"]["enabled"] else None
-        with torch.no_grad():
-            mu, logvar = self.vae.encoder(images)
-            latents = mu*self.scaling_factor
-            
+    def train_step(self, batch, step=None):
+        latents, labels = batch
+        latents = latents.to(self.device, non_blocking=True)
+        labels = labels.to(self.device, non_blocking=True)
+        latents = latents * self.scaling_factor
+
         with self.accelerator.accumulate(self.model):
             with self.accelerator.autocast():
-                x_t,t,noise = self.diffusion(latents)
+                x_t, t, noise = self.diffusion(latents)
                 elt_loss = None
-                if  self.use_elt:
-                    record = sample_intermediate_loops(self.cfg, self.raw_model.loop_cfg.loop_steps)
-                    output = self.model(x_t,t,labels,record=record)
+
+                if self.use_elt:
+                    record = sample_intermediate_loops(
+                        self.cfg,
+                        self.raw_model.loop_cfg.loop_steps,
+                    )
+                    output = self.model(
+                        x_t, t, labels, record=record
+                    )
                 else:
-                    output = self.model(x_t,t,labels)
+                    output = self.model(x_t, t, labels)
 
                 model_output = self._parse_model_output(output)
-                eps_pred,_ = self.diffusion._split_output(model_output["pred"])
-                losses = self.criterion(eps_pred,noise)
+                eps_pred, _ = self.diffusion._split_output(
+                    model_output["pred"]
+                )
+
+                losses = self.criterion(eps_pred, noise)
                 loss = losses["loss"]
+
                 if self.use_elt and self.distill is not None:
                     history = model_output["history"]
-                    history_pred = {k: self.raw_model.final_layer(v, model_output["c"])for k,v in history.items()}
+                    history_pred = {
+                        k: self.raw_model.final_layer(
+                            v,
+                            model_output["c"],
+                        )
+                        for k, v in history.items()
+                    }
+
                     lmax = max(history_pred.keys())
                     teacher = history_pred[lmax].detach()
-                    distill_loss = torch.tensor(0.0,device=self.device)
+
+                    distill_loss = torch.tensor(
+                        0.0,
+                        device=self.device,
+                    )
+
                     for k, student in history_pred.items():
                         if k == lmax:
                             continue
-                        distill_loss += self.distill(student,teacher)
+                        distill_loss += self.distill(
+                            student,
+                            teacher,
+                        )
+
                     elt_lambda = self.distill_scheduler(step)
-                    losses["elt"]=distill_loss
+                    losses["elt"] = distill_loss
                     loss = loss + elt_lambda * distill_loss
-                if  self.repa is not None:
-                    dit_features = self.raw_model.forward_features(x_t,t,labels)
-                    if isinstance(dit_features,tuple):
-                        dit_features = dit_features[0]
-                    with torch.no_grad():
-                        target_features = self.repa_encoder(images)
-                    repa_loss = self.repa(dit_features,target_features)
-                    losses["repa"] = repa_loss
-                    loss = loss+self.cfg["repa"]["lambda"]*repa_loss
+
+                if self.repa is not None:
+                    raise RuntimeError(
+                        "REPA requires cached target_features; "
+                        "disable REPA for the current latent+label cache."
+                    )
 
             self.optimizer.zero_grad(set_to_none=True)
             self.accelerator.backward(loss)
-            self.accelerator.clip_grad_norm_(self.model.parameters(),self.cfg["train"]["grad_clip_norm"])
+            self.accelerator.clip_grad_norm_(
+                self.model.parameters(),
+                self.cfg["train"]["grad_clip_norm"],
+            )
             self.optimizer.step()
+
             if self.scheduler is not None:
                 self.scheduler.step()
+
         if self.ema is not None:
-            self.ema.update(self.raw_model,step=step)
+            self.ema.update(self.raw_model, step=step)
+
         return {
             "losses": losses,
-            "batch_size": images.size(0),
-            "history": model_output["history"]
+            "batch_size": latents.size(0),
+            "history": model_output["history"],
         }
-
     def validate(self, step):
         if step % self.cfg["eval"]["every"] != 0:
             return
@@ -503,40 +532,84 @@ class DiTTrainer(BaseTrainer):
 # DIT FACTORY
 def build_dit_trainer(cfg):
     if cfg["elt"]["enabled"] and cfg["model"]["name"] != "looped_dit":
-        raise ValueError(
-            "ELT requires model.name='looped_dit'"
-        )
+        raise ValueError("ELT requires model.name='looped_dit'")
+
     set_seed(cfg["seed"])
     checkpoint_dir = setup_environment(cfg)
     accelerator = build_accelerator(cfg)
     device = accelerator.device
-     = build_dataloader(cfg["data"],split="train")
-    test_loader = build_dataloader(cfg["data"],split="test")
-    loaders logger = build_logger(cfg, accelerator)
-    # data
-    train_loader= {"train": train_loader,"test": test_loader,}
-    # models
+    logger = build_logger(cfg, accelerator)
+
+    train_loader = build_latent_dataloader(
+        cfg["data"],
+        split="train",
+    )
+
+    eval_loaders = {
+        "train": build_dataloader(cfg["data"], split="train"),
+        "test": build_dataloader(cfg["data"], split="test"),
+    }
+
     model = build_model(cfg)
-    vae= build_vae_from_checkpoint(cfg["vae"]["checkpoint"],device=device,freeze=True)
-    scaling_factor = compute_scaling_factor(vae, cfg, split="train", device=device)
-    print(f"scaling_factor (computed fresh): {scaling_factor}")
+
+    vae = build_vae_from_checkpoint(
+        cfg["vae"]["checkpoint"],
+        device=device,
+        freeze=True,
+    )
+
+    scaling_factor = compute_latent_scaling_factor(
+        cfg["data"],
+        split="train",
+    )
+
+    print(f"scaling_factor: {scaling_factor}")
+
     diffusion = build_diffusion(cfg)
-    # training objects
     criterion = build_loss(cfg)
-    optimizer = build_optimizer(model,cfg)
-    scheduler = build_scheduler(optimizer,cfg)
+    optimizer = build_optimizer(model, cfg)
+    scheduler = build_scheduler(optimizer, cfg)
+
     window = cfg["train"]["ema_window_ratio"] * cfg["train"]["total_steps"]
     ema_decay = 1 - 1 / window
     ema = EMA(model, decay=ema_decay)
-    # evaluation dependency
-    fid_metric = build_fid_metric(cfg,device)
-    evaluators = build_evaluators(cfg,model,loaders,device,vae=vae,diffusion=diffusion,fid_metric=fid_metric,scaling_factor=scaling_factor)
+
+    fid_metric = build_fid_metric(cfg, device)
+
+    evaluators = build_evaluators(
+        cfg,
+        model,
+        eval_loaders,
+        device,
+        vae=vae,
+        diffusion=diffusion,
+        fid_metric=fid_metric,
+        scaling_factor=scaling_factor,
+    )
+
     distill = build_distillation(cfg)
     repa, repa_encoder = build_repa(cfg, model)
 
-
-    return DiTTrainer(cfg,model,vae,diffusion,optimizer,criterion,train_loader,accelerator,device,checkpoint_dir,scheduler=scheduler,ema=ema,logger=logger,evaluators=evaluators,distill=distill,repa = repa,repa_encoder = repa_encoder,scaling_factor=scaling_factor)
-
+    return DiTTrainer(
+        cfg,
+        model,
+        vae,
+        diffusion,
+        optimizer,
+        criterion,
+        train_loader,
+        accelerator,
+        device,
+        checkpoint_dir,
+        scheduler=scheduler,
+        ema=ema,
+        logger=logger,
+        evaluators=evaluators,
+        distill=distill,
+        repa=repa,
+        repa_encoder=repa_encoder,
+        scaling_factor=scaling_factor,
+    )
 TRAINER_BUILDERS = {
     "vae": build_vae_trainer,
     "dit": build_dit_trainer,

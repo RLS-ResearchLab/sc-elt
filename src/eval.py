@@ -31,6 +31,7 @@ class FIDEvalConfig:
 @dataclass
 class VAEEvalConfig:
     reconstruction: ReconstructionEvalConfig
+    fid: FIDEvalConfig
 
 
 @dataclass
@@ -225,17 +226,48 @@ class FIDEvaluator(Evaluator):
             },
         }
 
+class VAEFIDEvaluator(Evaluator):
+    def __init__(self, cfg, fid_metric, real_loader, model, device):
+        super().__init__(cfg, device)
+        self.metric = fid_metric
+        self.real_loader = real_loader
+        self.model = model
 
+    @torch.no_grad()
+    def evaluate(self):
+        was_training = self.model.training
+        self.model.eval()
+
+        try:
+            self.metric.reset()
+            count = 0
+
+            for batch in self.real_loader:
+                if count >= self.cfg.fid_num_samples:
+                    break
+
+                images = extract_images(batch).to(self.device)
+                n = min(images.size(0), self.cfg.fid_num_samples - count)
+                images = images[:n]
+
+                self.metric.update(denormalize(images), real=True)
+
+                recon = self.model(images)["recon"]
+                self.metric.update(denormalize(recon), real=False)
+
+                count += n
+
+            fid = self.metric.compute().item()
+
+        finally:
+            self.model.train(was_training)
+
+        return {"metrics": {"fid": fid}}
 # ============================================================
 # VAE Evaluator Builder
 # ============================================================
 
-def build_vae_evaluators(
-    cfg,
-    model,
-    loaders,
-    device,
-):
+def build_vae_evaluators(cfg, model, loaders, device, fid_metric=None):
     evaluators = {}
 
     if cfg.reconstruction.enabled:
@@ -243,6 +275,15 @@ def build_vae_evaluators(
             cfg=cfg.reconstruction,
             model=model,
             dataloader=loaders["test"],
+            device=device,
+        )
+
+    if cfg.fid.enabled:
+        evaluators["fid"] = VAEFIDEvaluator(
+            cfg=cfg.fid,
+            fid_metric=fid_metric,
+            real_loader=loaders["test"],
+            model=model,
             device=device,
         )
 
@@ -310,6 +351,9 @@ def build_evaluators(cfg, model, loaders, device, **kwargs):
             reconstruction=ReconstructionEvalConfig(
                 **cfg["eval"]["reconstruction"],
             ),
+            fid=FIDEvalConfig(
+                **cfg["eval"]["fid"],
+            ),
         )
 
         return build_vae_evaluators(
@@ -317,6 +361,7 @@ def build_evaluators(cfg, model, loaders, device, **kwargs):
             model=model,
             loaders=loaders,
             device=device,
+            fid_metric=kwargs.get("fid_metric")
         )
 
     if model_name == "dit":

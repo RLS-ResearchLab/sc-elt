@@ -14,7 +14,7 @@ model:
     grid_h: 32
     grid_w: 32
 
-    num_classes: null
+    num_classes: 1000
 
     cfg_dropout: 0.1
 
@@ -28,8 +28,8 @@ model:
 
 
 vae:
-  checkpoint: checkpoints/vae_celeba_hq_256_run4/vae_run4_final.pt
-
+  checkpoint: checkpoints/vae_imagenet_256_run4/vae_run4_80000.pt
+  
 elt:
   enabled: false
 # ============================================================
@@ -46,7 +46,7 @@ eval:
     sample_batch_size: 64
     ddim_steps: 50
     guidance_scale: 1.0
-    eta: 0.1
+    eta: 0.0
 
 diffusion:
 
@@ -83,8 +83,8 @@ loss:
   diffusion: mse
 train:
 
-  resume: checkpoints/dit_celeba_hq_256_run5/dit_run5_110000.pt
-  total_steps: 200000
+  resume: null
+  total_steps: 300000
 
 conditioning:
   enabled: false

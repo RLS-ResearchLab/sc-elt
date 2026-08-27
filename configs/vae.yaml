@@ -25,6 +25,10 @@ eval:
   reconstruction:
     enabled: true
     num_images: 8
+    
+  fid:
+    enabled: true
+    fid_num_samples: 50000
 
 train:
 

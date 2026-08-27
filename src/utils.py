@@ -1,6 +1,7 @@
 import copy
 import math
 import os
+import glob
 import random
 
 import numpy as np
@@ -648,3 +649,27 @@ def build_repa(cfg, model):
     )
 
     return repa, encoder
+
+def compute_latent_scaling_factor(cfg, split="train"):
+    files = sorted(glob.glob(
+        os.path.join(cfg[f"latent_cache_path_{split}"], "chunk_*.pt")
+    ))
+
+    if not files:
+        raise FileNotFoundError("No latent cache found.")
+
+    total = 0
+    sum_sq = 0.0
+
+    for f in files:
+        latents = torch.load(
+            f,
+            map_location="cpu",
+            weights_only=True,
+        )["latents"]
+
+        sum_sq += latents.double().pow(2).sum().item()
+        total += latents.numel()
+
+    std = (sum_sq / total) ** 0.5
+    return 1.0 / std
