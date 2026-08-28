@@ -43,6 +43,37 @@ class ShardShuffleSampler(Sampler):
     def __len__(self):
         return len(self.dataset)
 
+class ChunkShuffleSampler(Sampler):
+    """
+    Shuffle chunk order each epoch while keeping all samples
+    from a chunk contiguous.
+
+    This preserves ChunkedLatentDataset's in-memory chunk cache.
+    """
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.chunk_indices = []
+
+        start = 0
+        for size in dataset.sizes:
+            self.chunk_indices.append(
+                list(range(start, start + size))
+            )
+            start += size
+
+    def __iter__(self):
+        chunk_order = list(range(len(self.chunk_indices)))
+        random.shuffle(chunk_order)
+
+        for chunk_idx in chunk_order:
+            indices = self.chunk_indices[chunk_idx][:]
+            random.shuffle(indices)
+            yield from indices
+
+    def __len__(self):
+        return len(self.dataset)
+        
 class ImageOnlyDataset(Dataset):
     """Wrapper that returns only images from an image-label dataset."""
 
@@ -131,11 +162,14 @@ class ChunkedLatentDataset(Dataset):
                 weights_only=True,
             )
             self.cache_idx = chunk_idx
+        latents = self.cache["latents"]
+        labels = self.cache.get("labels")
 
-        return (
-            self.cache["latents"][local_idx],
-            self.cache["labels"][local_idx],
-        )
+        if labels is None:
+            return latents[local_idx]
+
+        return latents[local_idx], labels[local_idx]
+        
 class ImageNetParquetDataset(Dataset):
     def __init__(
         self,
@@ -322,6 +356,20 @@ def _make_loader(dataset, cfg, is_train):
             persistent_workers=(num_workers > 0),
         )
 
+    if is_train and isinstance(
+        dataset,
+        ChunkedLatentDataset,
+    ):
+        return DataLoader(
+            dataset,
+            batch_size=cfg["batch_size"],
+            sampler=ChunkShuffleSampler(dataset),
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=(num_workers > 0),
+            drop_last=True,
+        )
+
     return DataLoader(
         dataset,
         batch_size=cfg["batch_size"],
@@ -502,18 +550,14 @@ def build_latent_cache(
             non_blocking=True,
         )
 
-        labels = extract_labels(batch).cpu().long()
+        labels = extract_labels(batch)
 
-        if labels is None:
-            raise RuntimeError(
-                f"Expected labels for {split} latent cache, "
-                "but the DataLoader returned none."
-            )
+        if labels is not None:
+            labels = labels.cpu().long()
+            label_chunks.append(labels)
 
         mu, _ = encoder(images)
-
         latent_chunks.append(mu.cpu())
-        label_chunks.append(labels.cpu())
 
         current_size = sum(
             x.size(0) for x in latent_chunks
@@ -521,6 +565,58 @@ def build_latent_cache(
 
         if current_size >= chunk_size:
             latents = torch.cat(latent_chunks)
+
+            if label_chunks:
+                labels = torch.cat(label_chunks)
+
+                if latents.size(0) != labels.size(0):
+                    raise RuntimeError(
+                        f"Latent/label mismatch: "
+                        f"{latents.size(0)} vs {labels.size(0)}"
+                    )
+
+                cache = {
+                    "latents": latents,
+                    "labels": labels,
+                }
+
+            else:
+                cache = {
+                    "latents": latents,
+                }
+
+            torch.save(
+                cache,
+                os.path.join(
+                    cache_dir,
+                    f"chunk_{chunk_id:05d}.pt",
+                ),
+            )
+
+            if label_chunks:
+                print(
+                    f"chunk {chunk_id}: "
+                    f"latents={latents.shape}, "
+                    f"labels={labels.shape}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"chunk {chunk_id}: "
+                    f"latents={latents.shape}",
+                    flush=True,
+                )
+
+            total += latents.size(0)
+
+            latent_chunks.clear()
+            label_chunks.clear()
+            chunk_id += 1
+
+    if latent_chunks:
+        latents = torch.cat(latent_chunks)
+
+        if label_chunks:
             labels = torch.cat(label_chunks)
 
             if latents.size(0) != labels.size(0):
@@ -529,56 +625,37 @@ def build_latent_cache(
                     f"{latents.size(0)} vs {labels.size(0)}"
                 )
 
-            torch.save(
-                {
-                    "latents": latents,
-                    "labels": labels,
-                },
-                os.path.join(
-                    cache_dir,
-                    f"chunk_{chunk_id:05d}.pt",
-                ),
-            )
-
-            print(
-                f"chunk {chunk_id}: "
-                f"latents={latents.shape}, "
-                f"labels={labels.shape}",
-                flush=True,
-            )
-
-            total += latents.size(0)
-            latent_chunks.clear()
-            label_chunks.clear()
-            chunk_id += 1
-
-    if latent_chunks:
-        latents = torch.cat(latent_chunks)
-        labels = torch.cat(label_chunks)
-
-        if latents.size(0) != labels.size(0):
-            raise RuntimeError(
-                f"Latent/label mismatch: "
-                f"{latents.size(0)} vs {labels.size(0)}"
-            )
-
-        torch.save(
-            {
+            cache = {
                 "latents": latents,
                 "labels": labels,
-            },
+            }
+
+        else:
+            cache = {
+                "latents": latents,
+            }
+
+        torch.save(
+            cache,
             os.path.join(
                 cache_dir,
                 f"chunk_{chunk_id:05d}.pt",
             ),
         )
 
-        print(
-            f"chunk {chunk_id}: "
-            f"latents={latents.shape}, "
-            f"labels={labels.shape}",
-            flush=True,
-        )
+        if label_chunks:
+            print(
+                f"chunk {chunk_id}: "
+                f"latents={latents.shape}, "
+                f"labels={labels.shape}",
+                flush=True,
+            )
+        else:
+            print(
+                f"chunk {chunk_id}: "
+                f"latents={latents.shape}",
+                flush=True,
+            )
 
         total += latents.size(0)
         chunk_id += 1

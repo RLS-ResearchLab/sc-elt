@@ -361,9 +361,15 @@ class DiTTrainer(BaseTrainer):
             "history": None,
         }
     def train_step(self, batch, step=None):
-        latents, labels = batch
+        if isinstance(batch, (tuple, list)):
+            latents, labels = batch
+        else:
+            latents = batch
+            labels = None
+
         latents = latents.to(self.device, non_blocking=True)
-        labels = labels.to(self.device, non_blocking=True)
+        if labels is not None:
+            labels = labels.to(self.device, non_blocking=True)
         latents = latents * self.scaling_factor
 
         with self.accelerator.accumulate(self.model):

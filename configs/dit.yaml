@@ -1,82 +1,87 @@
 seed: 123
 
-
 # ============================================================
-# Data
-# ============================================================
-
-data:
-  name: ffhq
-  root: ./data/ffhq_256/data
-  dataset: ffhq_parquet
-  image_size: 256
-  batch_size: 32
-  num_workers: 4
-# ============================================================
-# Optimizer
+# DiT Model
 # ============================================================
 
-optimizer:
+model:
+  name: dit
+  variant: DiT-B
 
-  name: adamw
+  attention:
+    type: rope
 
-  lr: 5.0e-5
-
-  weight_decay: 0.01
-
-  betas:
-    - 0.9
-    - 0.999
-
-  eps: 1.0e-8
-
-  fused: true
-
-
+  dit:
+    cfg_dropout: 0.1
+    dropout: 0.0
+    grid_h: 32
+    grid_w: 32
+    latent_dim: 4
+    mlp_ratio: 4.0
+    num_classes: 1000
 
 # ============================================================
-# Scheduler
+# Diffusion
 # ============================================================
 
-scheduler:
-  name: linear_warmup_constant
-  warmup_ratio: 0.1
-
+diffusion:
+  beta_end: 0.02
+  beta_start: 0.0001
+  cosine_s: 0.008
+  learn_sigma: false
+  schedule: linear
+  timestep: 1000
 
 # ============================================================
-# Training
+# Conditioning
 # ============================================================
 
-train:
-
-  total_steps: 100000
-  ema_window_ratio: 0.01
-  gradient_accumulation_steps: 4
-
-  mixed_precision: bf16
-
-  use_compile: false
-
-  benchmark: true
-
-  allow_tf32: true
-
-  grad_clip_norm: 1.0
-
-  log_every: 100
-
-  ckpt_every: 10000
-
-  checkpoints_dir: checkpoints
-  deterministic: false
-
-repa:
+conditioning:
   enabled: false
-  lambda: 0.5
-  encoder: dinov2
 
-wandb_checkpoint:
+# ============================================================
+# Loss
+# ============================================================
+
+loss:
+  diffusion: mse
+
+# ============================================================
+# Evaluation
+# ============================================================
+
+eval:
+  every: 5000
+
+  fid:
+    enabled: true
+    fid_num_samples: 1000
+    sample_batch_size: 64
+    ddim_steps: 50
+    guidance_scale: 1.0
+    eta: 0.0
+
+# ============================================================
+# Sampling
+# ============================================================
+
+sampling:
   enabled: true
-  every: 10000
-  upload_best: true
-  upload_final: true
+  every: 5000
+  save_dir: samples
+  checkpoint: null
+  diffusion: {}
+
+# ============================================================
+# ELT
+# ============================================================
+
+elt:
+  enabled: false
+
+# ============================================================
+# VAE
+# ============================================================
+
+vae:
+  checkpoint: ./checkpoints/vae_ffhq_256_run4/vae_run4_final.pt

@@ -12,6 +12,8 @@ data:
   image_size: 256
   batch_size: 32
   num_workers: 4
+  latent_cache_path_train: ./data/ffhq_256/latents_train
+  latent_cache_path_test: ./data/ffhq_256/latents_test
 # ============================================================
 # Optimizer
 # ============================================================
