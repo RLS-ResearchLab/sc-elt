@@ -783,8 +783,16 @@ class DiTBase(nn.Module):
         super().__init__()
         self.cfg  = cfg
         if attn_cfg.attention_type == "mha":
-            self.pos_embed = build_2d_sincos_pos_embed(d_model=cfg.hidden_size,grid_h=cfg.grid_h,grid_w=cfg.grid_w)
-            self.register_buffer("pos_embed",self.pos_embed.unsqueeze(0),persistent=False)
+            pos_embed = build_2d_sincos_pos_embed(
+                d_model=cfg.hidden_size,
+                grid_h=cfg.grid_h,
+                grid_w=cfg.grid_w,
+            )
+            self.register_buffer(
+                "pos_embed",
+                pos_embed.unsqueeze(0),
+                persistent=False,
+            )
         else:
             self.pos_embed = None
         self.num_timesteps = num_timesteps
