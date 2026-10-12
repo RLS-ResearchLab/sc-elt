@@ -51,13 +51,13 @@ A DiT-style transformer with adaLN-Zero timestep conditioning and 2D RoPE, train
 
 The diffusion loss is applied to the final loop. ILSD adds a distillation term in which the **final loop's prediction is the teacher** (gradients stopped) and the predictions read out from the intermediate loops are the students, so every loop count learns to produce a usable output:
 
-```
-L = MSE(ε̂_L, ε)  +  λ(step) · Σ_{k ∈ K}  MSE( f(h_k), sg[ f(h_L) ] )
+```math
+\mathcal{L} = \mathrm{MSE}\big(\hat{\varepsilon}_L,\ \varepsilon\big) + \lambda(\text{step}) \sum_{k \in K} \mathrm{MSE}\big(f(h_k),\ \mathrm{sg}[f(h_L)]\big)
 ```
 
-- `L` = `loop_steps` = 4, `K` = `intermediate_loops` = {1, 2, 3} (strategy `fixed`; a `random` strategy is also implemented).
-- `h_k` is the hidden state after loop k and `f` is the shared output layer.
-- Distillation loss: MSE (or smooth-L1), summed over students. λ = 0.5, ramped up with a `linear_warmup` schedule.
+- $L$ = `loop_steps` = 4, $K$ = `intermediate_loops` = {1, 2, 3} (strategy `fixed`; a `random` strategy is also implemented).
+- $h_k$ is the hidden state after loop $k$, $f$ is the shared output layer, and $\mathrm{sg}[\cdot]$ is the stop-gradient.
+- Distillation loss: MSE (or smooth-L1), summed over students. $\lambda$ = 0.5, ramped up with a `linear_warmup` schedule.
 - The loop count is read from the model instance rather than duplicated in the config, to avoid silent divergence between the trained model and its config.
 
 ### Inference compute
@@ -118,8 +118,6 @@ The internship followed a fixed weekly roadmap:
 | Looped-DiT | Same backbone, `loop_steps` = 4 |
 | ILSD | `fixed` strategy, K = {1, 2, 3}, MSE, λ = 0.5, linear warm-up |
 | FID during training | Every 5,000 steps (1,000 for the VAE), 1,000 generated images, 50 DDIM steps, η = 0, guidance 1.0 |
-
-<!-- VERIFY: batch (32 x 4 = 128) is taken from default.yaml; the original draft said 8 x 16 = 128. Also confirm total_steps used for each reported run. -->
 
 **Evaluation protocol.**
 - *VAE:* eval MSE is computed in the model's [-1, 1] pixel space on the test split. VAE "FID" is a **reconstruction FID** (real test images against their own reconstructions), so it measures reconstruction fidelity, not generation quality.
@@ -298,6 +296,7 @@ It writes a CSV (`loops`, `nfe_backbone`, `fid`, …), a FID-vs-`nfe_backbone` p
 sc-elt/
 ├── README.md
 ├── requirements.txt
+├── LICENSE
 ├── configs/
 │   ├── default.yaml          # shared training configuration (FFHQ data block)
 │   ├── flowers102.yaml       # base config with a Flowers-102 data block (template)
@@ -377,4 +376,8 @@ Developed at **Telcotec** as part of an internship for SUP'COM (Higher School of
 
 ## Author
 
-**Wajdi Zenteni**, engineering student at SUP'COM, Training Manager at MLS (Machine Learning Sup'Com), member of RLS Research Labs.
+**Wajdi Zanteni**, engineering student at SUP'COM, Training Manager at MLS (Machine Learning Sup'Com), member of RLS Research Labs.
+
+## License
+
+Released under the [MIT License](LICENSE).
