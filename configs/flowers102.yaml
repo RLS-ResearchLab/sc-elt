@@ -1,0 +1,54 @@
+# Base config for Oxford Flowers-102 (TEMPLATE, adapt paths to your machine).
+# Use it instead of default.yaml:
+#   python src/train.py --config configs/flowers102.yaml --model-config configs/vae.yaml
+#
+# Same as configs/default.yaml except for the `data` block. Flowers-102 is read with the
+# generic `imagefolder` loader, which expects  <root>/train/<class>/*.jpg  and  <root>/test/<class>/*.jpg
+seed: 123
+
+data:
+  name: flowers102
+  root: ./data/flowers102
+  dataset: imagefolder
+  image_size: 256
+  batch_size: 32
+  num_workers: 4
+  latent_cache_path_train: ./data/flowers102/latents_train
+  latent_cache_path_test: ./data/flowers102/latents_test
+
+optimizer:
+  name: adamw
+  lr: 5.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  fused: true
+
+scheduler:
+  name: linear_warmup_constant
+  warmup_ratio: 0.1
+
+train:
+  total_steps: 100000
+  ema_window_ratio: 0.01
+  gradient_accumulation_steps: 4
+  mixed_precision: bf16
+  use_compile: false
+  benchmark: true
+  allow_tf32: true
+  grad_clip_norm: 1.0
+  log_every: 100
+  ckpt_every: 10000
+  checkpoints_dir: checkpoints
+  deterministic: false
+
+repa:
+  enabled: false
+  lambda: 0.5
+  encoder: dinov2
+
+wandb_checkpoint:
+  enabled: true
+  every: 10000
+  upload_best: true
+  upload_final: true
