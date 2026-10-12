@@ -145,7 +145,6 @@ All numbers are read from the W&B curves below. **Note on the x-axis:** W&B plot
 *Left to right, top to bottom: train reconstruction, train LPIPS, train KL, eval MSE, eval (reconstruction) FID, total train loss.*
 
 ![VAE-L reconstructions](assets/vae_flowers102_reconstructions.png)
-*Top row: input. Bottom row: reconstruction.*
 
 ### VAE-L (ImageNet subset)
 
@@ -217,6 +216,19 @@ wandb login                         # runs are logged to Weights & Biases
 
 `data.dataset` in the config selects the loader: `cifar10`, `imagefolder`, `imagenet_parquet` or `ffhq_parquet`. `configs/default.yaml` is set up for FFHQ (Parquet). For Flowers-102, use the `imagefolder` template `configs/flowers102.yaml` (expects `<root>/train/<class>/*.jpg` and `<root>/test/<class>/*.jpg`) via `--config`.
 
+One way to prepare Flowers-102 in that layout:
+
+```python
+import os
+from torchvision.datasets import Flowers102
+
+for split in ["train", "test"]:
+    ds = Flowers102("raw", split=split, download=True)
+    for i, (img, y) in enumerate(ds):
+        os.makedirs(f"data/flowers102/{split}/{y:03d}", exist_ok=True)
+        img.save(f"data/flowers102/{split}/{y:03d}/{i}.jpg")
+```
+
 For ImageNet, `create_imagenet_subset.py` builds a class-balanced index file (200 images per class) and the loader reads it through `data.subset_indices`.
 
 ### Training
@@ -228,9 +240,9 @@ All stages are launched through `src/train.py`, which merges a base config (`--c
 python src/train.py --config configs/flowers102.yaml --model-config configs/vae.yaml
 
 # 2. Encode the dataset to a latent cache with the trained VAE (needed by the DiT stages)
-python src/build_ffhq_latent_cache.py --config configs/flowers102.yaml \
+python src/build_imagenet_latent_cache.py --config configs/flowers102.yaml \
     --vae-checkpoint checkpoints/<vae_run>/<vae_checkpoint>.pt --split train
-python src/build_ffhq_latent_cache.py --config configs/flowers102.yaml \
+python src/build_imagenet_latent_cache.py --config configs/flowers102.yaml \
     --vae-checkpoint checkpoints/<vae_run>/<vae_checkpoint>.pt --split test
 
 # 3. DiT-B baseline
@@ -240,7 +252,7 @@ python src/train.py --config configs/flowers102.yaml --model-config configs/dit.
 python src/train.py --config configs/flowers102.yaml --model-config configs/elt.yaml
 ```
 
-(The cache script is dataset-agnostic despite its name: it encodes whatever `data` block the config defines.)
+(`build_imagenet_latent_cache.py` is dataset-agnostic: it encodes whatever `data` block the config defines.)
 
 Set `vae.checkpoint` in `configs/dit.yaml` and `configs/elt.yaml` to the trained VAE. Looped-DiT-B (no distillation) and ELT use the same file and differ by one flag:
 
@@ -315,9 +327,8 @@ sc-elt/
 │   ├── loading.py            # load a trained checkpoint + VAE + diffusion (used by the scripts below)
 │   ├── generate.py           # generate an image grid from a checkpoint
 │   ├── eval_loop_counts.py   # FID vs loop count / backbone passes
-│   ├── build_ffhq_latent_cache.py
-│   ├── build_imagenet_latent_cache.py
-│   └── create_imagenet_subset.py
+│   ├── build_imagenet_latent_cache.py   # encode a dataset to a VAE latent cache
+│   └── create_imagenet_subset.py        # build the class-balanced ImageNet subset index
 └── assets/                   # figures used in this README
 ```
 
